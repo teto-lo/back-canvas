@@ -1,10 +1,7 @@
 node_modules/
-.env
-output/images/*
-output/metadata/*
-!output/images/.gitkeep
-!output/metadata/.gitkeep
-database/*.db
-database/*.db-journal
+output/
 *.log
+.env
 cookies.json
+browser-profile/
+chrome-profile/

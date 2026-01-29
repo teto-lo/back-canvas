@@ -39,10 +39,35 @@ function getRandomDelay(min, max) {
 }
 
 /**
+ * Check if the current time is within working hours
+ */
+function isWorkingHours() {
+    if (!config.schedule || !config.schedule.enabled) return true;
+
+    const now = new Date();
+    const hour = now.getHours();
+
+    return hour >= config.schedule.startHour && hour < config.schedule.endHour;
+}
+
+/**
+ * Wait until working hours start
+ */
+async function waitUntilWorkingHours() {
+    if (!config.schedule || !config.schedule.enabled) return;
+
+    while (!isWorkingHours()) {
+        const now = new Date();
+        console.log(`\n💤 Outside working hours (${now.getHours()}:${now.getMinutes()}). Waiting until ${config.schedule.startHour}:00...`);
+        await sleep(15 * 60 * 1000); // Check every 15 minutes
+    }
+}
+
+/**
  * Main execution function
  */
 async function main() {
-    console.log('🚀 AC-Illust Auto-Upload System Started\n');
+    console.log('🚀 AC-Illust Auto-Uploader (Resident Mode) Started\n');
     console.log('='.repeat(60));
 
     // Validate environment variables
@@ -51,171 +76,156 @@ async function main() {
         process.exit(1);
     }
 
-    if (!config.upload.dryRun) {
-        if (!process.env.AC_EMAIL || !process.env.AC_PASSWORD) {
-            console.error('❌ Error: AC_EMAIL and AC_PASSWORD required for uploads');
-            process.exit(1);
-        }
-    }
-
-    // Initialize components
+    // Initialize persistent components
     const duplicateChecker = new DuplicateChecker();
     await duplicateChecker.connect();
 
-    const imageGenerator = new ImageGenerator(config);
-    await imageGenerator.launch();
-
     const aiMetadata = new AIMetadataGenerator(process.env.GEMINI_API_KEY, config);
 
-    let uploader = null;
-    if (!config.upload.dryRun) {
-        uploader = new ACIllustUploader({
-            email: process.env.AC_EMAIL,
-            password: process.env.AC_PASSWORD
-        }, config);
-        await uploader.launch(false); // Non-headless for manual login support
-        await uploader.login();
-    }
+    const SlackNotifier = require('./slack-notifier');
+    const slackNotifier = new SlackNotifier(config);
 
-    // Check daily limit
-    const todayCount = await duplicateChecker.getTodayUploadCount();
-    console.log(`📊 Today's uploads: ${todayCount}/${config.batch.dailyLimit}`);
-
-    if (todayCount >= config.batch.dailyLimit) {
-        console.log('⚠️  Daily limit reached. Exiting.');
-        await cleanup();
-        return;
-    }
-
-    // Calculate batch size
-    const targetCount = Math.min(
-        getRandomDelay(config.batch.minImages, config.batch.maxImages),
-        config.batch.dailyLimit - todayCount
-    );
-
-    console.log(`🎯 Target: ${targetCount} images\n`);
-    console.log('='.repeat(60) + '\n');
-
-    let uploadedCount = 0;
-    let attemptCount = 0;
-    const maxAttempts = targetCount * 3; // Allow retries
-
-    while (uploadedCount < targetCount && attemptCount < maxAttempts) {
-        attemptCount++;
-        console.log(`\n📦 Batch ${uploadedCount + 1}/${targetCount} (Attempt ${attemptCount})`);
-        console.log('-'.repeat(60));
-
+    // Initial Slack Start (Interactive Mode)
+    if (config.slack && config.slack.enabled) {
         try {
-            // 1. Generate image
-            const imageData = await imageGenerator.generateImage();
-
-            // 2. Check for duplicates
-            const dupCheck = await duplicateChecker.isDuplicate(imageData.jpegPath);
-            if (dupCheck.isDuplicate) {
-                console.log(`⚠️  Duplicate detected (hash: ${dupCheck.hash.substring(0, 8)}...)`);
-                console.log(`   Skipping and trying again...`);
-
-                // Clean up duplicate files
-                fs.unlinkSync(imageData.jpegPath);
-                if (imageData.pngPath) fs.unlinkSync(imageData.pngPath);
-
-                continue;
-            }
-
-            // 3. Generate metadata
-            const metadata = await aiMetadata.generateMetadata(
-                imageData.generatorName,
-                imageData.parameters
-            );
-
-            // Save metadata to file
-            await aiMetadata.saveMetadata(
-                metadata,
-                `${imageData.generatorName}_${imageData.timestamp}`
-            );
-
-            // 4. Upload (or skip in dry-run mode)
-            let uploadResult = { success: true, dryRun: config.upload.dryRun };
-
-            if (!config.upload.dryRun) {
-                uploadResult = await uploader.upload(
-                    imageData.jpegPath,
-                    imageData.pngPath,
-                    metadata
-                );
-            } else {
-                console.log('   ⚠️ DRY-RUN: Skipping actual upload');
-            }
-
-            // 5. Save record
-            const record = await duplicateChecker.saveUploadRecord({
-                jpegPath: imageData.jpegPath,
-                pngPath: imageData.pngPath,
-                generatorName: imageData.generatorName,
-                parameters: imageData.parameters,
-                metadata: metadata,
-                status: uploadResult.success ? 'success' : 'failed'
-            });
-
-            console.log(`   ✅ Record saved (ID: ${record.id})`);
-
-            uploadedCount++;
-            console.log(`\n✨ Progress: ${uploadedCount}/${targetCount} completed`);
-
-            // Rate limiting: wait between uploads
-            if (uploadedCount < targetCount) {
-                const delay = getRandomDelay(
-                    config.batch.delayBetweenUploads.min,
-                    config.batch.delayBetweenUploads.max
-                );
-                const minutes = Math.floor(delay / 60000);
-                const seconds = Math.floor((delay % 60000) / 1000);
-
-                console.log(`\n⏳ Waiting ${minutes}m ${seconds}s before next upload...`);
-                await sleep(delay);
-            }
-
-        } catch (error) {
-            console.error(`\n❌ Error in batch ${uploadedCount + 1}:`, error.message);
-            console.log('   Continuing to next attempt...');
-
-            // Wait a bit before retrying
-            await sleep(30000); // 30 seconds
+            await slackNotifier.start();
+        } catch (e) {
+            console.error('⚠️ Slack Socket Mode起動失敗:', e.message);
         }
     }
 
-    // Cleanup
-    async function cleanup() {
+    // 無限ループ開始
+    while (true) {
         console.log('\n' + '='.repeat(60));
-        console.log('🧹 Cleaning up...');
+        console.log('💤 待機中: Slackからの開始指示を待っています...');
+        console.log('='.repeat(60) + '\n');
 
-        await imageGenerator.close();
-        if (uploader) await uploader.close();
-        await duplicateChecker.close();
+        if (config.slack && config.slack.enabled) {
+            await slackNotifier.waitForStartTrigger();
+        }
 
-        console.log('✅ Cleanup complete');
+        let imageGenerator = null;
+        let uploader = null;
+        let uploadedCount = 0;
+        let targetCount = 0;
+
+        try {
+            // 1. Session Components Setup
+            imageGenerator = new ImageGenerator(config);
+            await imageGenerator.launch();
+
+            if (!config.upload.dryRun) {
+                uploader = new ACIllustUploader({
+                    email: process.env.AC_EMAIL || '',
+                    password: process.env.AC_PASSWORD || ''
+                }, config);
+                await uploader.launch(false);
+                const loginSuccess = await uploader.login();
+                if (!loginSuccess) throw new Error('ログインに失敗しました');
+            }
+
+            // 2. Batch Calculation
+            const todayCount = await duplicateChecker.getTodayUploadCount();
+            console.log(`📊 本日の累計投稿数: ${todayCount}/${config.batch.dailyLimit}`);
+
+            if (todayCount >= config.batch.dailyLimit) {
+                console.log('⚠️ 本日の上限に達しています。明日また実行してください。');
+                if (slackNotifier) await slackNotifier.webClient.chat.postMessage({
+                    channel: process.env.SLACK_CHANNEL_ID,
+                    text: "⚠️ 今日の上限に達しているため、今回のバッチを終了します。"
+                });
+                // この回の完了処理へ
+            } else {
+                targetCount = Math.min(
+                    getRandomDelay(config.batch.minImages, config.batch.maxImages),
+                    config.batch.dailyLimit - todayCount
+                );
+                console.log(`🎯 今回の目標投稿件数: ${targetCount} 枚\n`);
+
+                // 3. Main Loop
+                let attemptCount = 0;
+                const maxAttempts = targetCount * 3;
+
+                while (uploadedCount < targetCount && attemptCount < maxAttempts) {
+                    await waitUntilWorkingHours();
+                    attemptCount++;
+                    console.log(`\n📦 バッチ処理 ${uploadedCount + 1}/${targetCount} (試行 ${attemptCount})`);
+
+                    try {
+                        const imageData = await imageGenerator.generateImage();
+                        const dupCheck = await duplicateChecker.isDuplicate(imageData.jpegPath);
+                        if (dupCheck.isDuplicate) {
+                            console.log('⚠️ 重複検知。再生成します...');
+                            try { fs.unlinkSync(imageData.jpegPath); if (imageData.pngPath) fs.unlinkSync(imageData.pngPath); } catch (e) { }
+                            continue;
+                        }
+
+                        let metadata;
+                        if (config.ai && config.ai.enabled) {
+                            metadata = await aiMetadata.generateMetadata(imageData.generatorName, imageData.parameters);
+                        } else {
+                            metadata = aiMetadata.generateFallbackMetadata(imageData.generatorName);
+                        }
+
+                        await aiMetadata.saveMetadata(metadata, `${imageData.generatorName}_${imageData.timestamp}`);
+
+                        if (config.slack && config.slack.enabled) {
+                            const result = await slackNotifier.sendApprovalRequest(imageData.jpegPath, metadata, imageData.generatorName);
+                            if (result.action === 'reject') {
+                                try { fs.unlinkSync(imageData.jpegPath); if (imageData.pngPath) fs.unlinkSync(imageData.pngPath); } catch (e) { }
+                                continue;
+                            }
+                            if (result.action === 'postpone') {
+                                console.log('🕒 保留。1時間待機...');
+                                await sleep(3600000);
+                            }
+                            if (result.metadata) metadata = result.metadata;
+                        }
+
+                        let uploadResult = { success: true, dryRun: config.upload.dryRun };
+                        if (!config.upload.dryRun) {
+                            uploadResult = await uploader.upload(imageData.jpegPath, imageData.pngPath, metadata);
+                        }
+
+                        await duplicateChecker.saveUploadRecord({
+                            jpegPath: imageData.jpegPath,
+                            pngPath: imageData.pngPath,
+                            generatorName: imageData.generatorName,
+                            parameters: imageData.parameters,
+                            metadata: metadata,
+                            status: uploadResult.success ? 'success' : 'failed'
+                        });
+
+                        uploadedCount++;
+                        if (uploadedCount < targetCount) {
+                            const delay = getRandomDelay(config.batch.delayBetweenUploads.min, config.batch.delayBetweenUploads.max);
+                            console.log(`\n⏳ 次の投稿まで待機中...`);
+                            await sleep(delay);
+                        }
+                    } catch (err) {
+                        console.error('\n❌ エラー:', err.message);
+                        await sleep(10000);
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error('\n💥 セッションエラー:', error.message);
+        } finally {
+            // Cleanup current session
+            console.log('\n🧹 セッション終了処理中...');
+            if (imageGenerator) await imageGenerator.close().catch(() => { });
+            if (uploader) await uploader.close().catch(() => { });
+
+            if (config.slack && config.slack.enabled && targetCount > 0) {
+                await slackNotifier.sendCompletionSummary(uploadedCount, targetCount);
+            }
+            console.log('✅ セッション完了。次の指示を待ちます。');
+        }
     }
-
-    await cleanup();
-
-    // Final summary
-    console.log('\n' + '='.repeat(60));
-    console.log('📊 FINAL SUMMARY');
-    console.log('='.repeat(60));
-    console.log(`✅ Successfully uploaded: ${uploadedCount}/${targetCount}`);
-    console.log(`📁 Images saved in: ./output/images/`);
-    console.log(`📄 Metadata saved in: ./output/metadata/`);
-    console.log(`💾 Database: ./database/uploads.db`);
-
-    if (config.upload.dryRun) {
-        console.log('\n⚠️  DRY-RUN MODE: No actual uploads were performed');
-    }
-
-    console.log('\n✨ Auto-upload system completed successfully!\n');
 }
 
-// Run main function
 main().catch(error => {
-    console.error('\n💥 Fatal error:', error);
+    console.error('\n💥 致命的エラー:', error);
     process.exit(1);
 });

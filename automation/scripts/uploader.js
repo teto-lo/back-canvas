@@ -4,6 +4,7 @@
  */
 
 const puppeteer = require('puppeteer');
+const path = require('path');
 
 class ACIllustUploader {
     constructor(credentials, config) {
@@ -11,38 +12,36 @@ class ACIllustUploader {
         this.password = credentials.password;
         this.config = config;
         this.browser = null;
+        this.page = null;
     }
 
     /**
-     * Launch browser
+     * Launch browser with dedicated Chrome profile
      */
     async launch(headless = false) {
+        const userDataDir = path.join(__dirname, '../chrome-profile');
+        console.log(`🔧 専用Chromeプロファイルを使用します: ${userDataDir}`);
+
         this.browser = await puppeteer.launch({
             headless: headless ? 'new' : false,
+            userDataDir: userDataDir,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
+                '--mute-audio',
+                '--window-size=1920,1080'
             ],
-            defaultViewport: { width: 1920, height: 1080 },
+            defaultViewport: null,
             ignoreDefaultArgs: ['--enable-automation']
         });
 
-        // Remove webdriver flag
         const pages = await this.browser.pages();
-        if (pages.length > 0) {
-            this.page = pages[0];
-        } else {
-            this.page = await this.browser.newPage();
-        }
+        this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
 
         await this.page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => false
-            });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
         });
     }
 
@@ -50,351 +49,245 @@ class ACIllustUploader {
      * Close browser
      */
     async close() {
-        if (this.page) {
-            await this.page.close();
-        }
-        if (this.browser) {
-            await this.browser.close();
-        }
+        if (this.page) await this.page.close().catch(() => { });
+        if (this.browser) await this.browser.close().catch(() => { });
     }
 
     /**
-     * Login to AC-Illust (supports manual login for SNS auth)
+     * Login to AC-Illust
      */
     async login() {
-        const page = this.page || await this.browser.newPage();
-        this.page = page;
+        if (!this.page) this.page = await this.browser.newPage();
+        const page = this.page;
+
+        console.log('🔐 イラストACのログイン状態を確認中...');
 
         try {
-            console.log('🔐 Logging in to AC-Illust...');
+            await page.goto('https://www.ac-illust.com/creator/upload.php', {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
 
-            // Check if we have saved cookies
-            const fs = require('fs');
-            const path = require('path');
-            const cookiesPath = path.join(__dirname, '../cookies.json');
-
-            if (fs.existsSync(cookiesPath)) {
-                console.log('   📂 Loading saved session cookies...');
-                const cookies = JSON.parse(fs.readFileSync(cookiesPath, 'utf8'));
-                await page.setCookie(...cookies);
-
-                // Test if session is still valid
-                await page.goto('https://www.ac-illust.com/creator/upload.php', {
-                    waitUntil: 'networkidle0'
-                });
-
-                if (!page.url().includes('login')) {
-                    console.log('   ✅ Login successful (using saved session)');
-                    console.log('   ✅ Login successful (using saved session)');
-                    // Keep page open
-                    return true;
-                }
-
-                console.log('   ⚠️ Saved session expired, need to login again');
-            }
-
-
-            // If email/password provided and valid, try standard login
-            const hasValidCredentials = this.email &&
-                this.password &&
-                !this.email.includes('your_email') &&
-                !this.password.includes('your_password');
-
-            if (hasValidCredentials) {
-                await page.goto('https://www.ac-illust.com/main/login.php', {
-                    waitUntil: 'networkidle0'
-                });
-
-                // Fill login form
-                await page.type('input[name="login_id"]', this.email);
-                await page.type('input[name="password"]', this.password);
-
-                // Click login button
-                await page.click('button[type="submit"]');
-                await page.waitForNavigation({ waitUntil: 'networkidle0' });
-
-                // Check if login was successful
-                const url = page.url();
-                if (url.includes('login')) {
-                    throw new Error('Login failed - check credentials');
-                }
-
-                // Save cookies for future use
-                const cookies = await page.cookies();
-                fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
-                console.log('   💾 Session cookies saved');
-
-                console.log('   ✅ Login successful');
-                console.log('   ✅ Login successful');
-                // Keep page open
-                console.log('   👀 Keeping session open...');
+            // ログイン済みかどうかの真の判定：アップロードフィールドがあるか
+            const isLoggedIn = await page.$('input#jpg_path');
+            if (isLoggedIn) {
+                console.log('   ✅ ログイン済みです');
                 return true;
             }
 
-            // Manual login for SNS authentication (Google, etc.)
-            console.log('\n⚠️  SNS Login Required (Google/Facebook/etc.)');
-            console.log('   Please login manually in the browser window...');
-            console.log('   The script will wait for you to complete login.\n');
+            console.log('   ⚠️ ログインが必要です。Googleログインを開始します...');
 
-            await page.goto('https://www.ac-illust.com/main/login.php', {
-                waitUntil: 'networkidle0'
-            });
+            // Googleボタンを探す (複数のセレクタを試行)
+            const googleSelectors = [
+                'a[onclick*="provider=Google"]',
+                '#btn-auth-google',
+                '.btn-google',
+                'a[href*="provider=Google"]'
+            ];
 
-            // Wait for user to login manually (check every 2 seconds)
-            let loggedIn = false;
-            const maxWaitTime = 300000; // 5 minutes
-            const startTime = Date.now();
+            let buttonMatched = null;
+            for (const selector of googleSelectors) {
+                try {
+                    const btn = await page.$(selector);
+                    if (btn) {
+                        buttonMatched = selector;
+                        break;
+                    }
+                } catch (e) { }
+            }
 
-            while (!loggedIn && (Date.now() - startTime) < maxWaitTime) {
-                await page.waitForTimeout(2000);
+            if (!buttonMatched) {
+                console.log('   ❌ Googleログインボタンが見つかりませんでした。');
+                await page.screenshot({ path: path.join(__dirname, `../output/no_login_btn_${Date.now()}.png`) });
+                return false;
+            }
 
-                // Check if we're on a logged-in page
-                const currentUrl = page.url();
-                if (!currentUrl.includes('login') &&
-                    (currentUrl.includes('creator') || currentUrl.includes('mypage'))) {
-                    loggedIn = true;
-                    break;
+            console.log(`   🔵 Googleボタン (${buttonMatched}) をクリックします...`);
+            await page.evaluate((sel) => {
+                const el = document.querySelector(sel);
+                if (el) {
+                    el.scrollIntoView();
+                    el.click();
+                }
+            }, buttonMatched);
+
+            // 遷移を待機
+            await page.waitForTimeout(5000);
+
+            // Googleアカウント選択画面のハンドル
+            if (page.url().includes('accounts.google.com')) {
+                const content = await page.content();
+                if (content.includes('アカウントを選択') || content.includes('data-identifier')) {
+                    console.log('   👤 アカウント選択画面を検知しました。');
+                    try {
+                        const accBtn = await page.waitForSelector('div[data-identifier]', { timeout: 10000 });
+                        if (accBtn) {
+                            console.log('   🤖 保存済みアカウントを自動選択します...');
+                            await page.click('div[data-identifier]');
+                            await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 }).catch(() => { });
+                        }
+                    } catch (e) {
+                        console.log('   ⚠️ 自動選択に失敗しました。手動操作が必要です。');
+                    }
                 }
             }
 
-            if (!loggedIn) {
-                throw new Error('Login timeout - please try again');
+            // 最終的なログイン成功確認（1分間ループで確認）
+            console.log('   ⏳ ログイン完了を待機中...');
+            const start = Date.now();
+            while (Date.now() - start < 60000) {
+                await page.waitForTimeout(3000);
+                if (await page.$('input#jpg_path')) {
+                    console.log('   ✅ ログインに成功しました');
+                    return true;
+                }
+                // もし変なページにいたらアップロードページへ再試行
+                if (page.url().includes('ac-illust.com') && !page.url().includes('login') && !page.url().includes('upload')) {
+                    await page.goto('https://www.ac-illust.com/creator/upload.php', { waitUntil: 'networkidle0' }).catch(() => { });
+                }
             }
 
-            // Human-like delay
-            await page.waitForTimeout(1000 + Math.random() * 1000);
-
-            // Save cookies for future use
-            const cookies = await page.cookies();
-            fs.writeFileSync(cookiesPath, JSON.stringify(cookies, null, 2));
-            console.log('   💾 Session cookies saved for future use');
-            console.log('   ✅ Login successful!\n');
-
-            // Do not close page, keep it open for reuse
-            console.log('   👀 Keeping session open...');
-            return true;
+            console.log('   ❌ ログインのタイムアウトまたは失敗です。');
+            return false;
 
         } catch (error) {
-            await page.close();
-            throw error;
+            console.error('   ❌ ログインエラー:', error.message);
+            return false;
         }
     }
 
     /**
-     * Upload image to AC-Illust
+     * イラストACへのアップロード
      */
     async upload(jpegPath, pngPath, metadata) {
-        const page = this.page || await this.browser.newPage();
-        this.page = page;
+        if (!this.page) this.page = await this.browser.newPage();
+        const page = this.page;
 
         try {
-            console.log('📤 Uploading to AC-Illust...');
+            console.log('📤 イラストACにアップロードを開始します...');
 
-            // Navigate to upload page
+            // アップロードページへ
             await page.goto('https://www.ac-illust.com/creator/upload.php', {
                 waitUntil: 'networkidle0'
             });
 
-            // Human-like delay after page load
-            await page.waitForTimeout(2000 + Math.random() * 2000); // 2-4 seconds
+            // ログインチェック
+            if (!(await page.$('input#jpg_path'))) {
+                console.log('   ⚠️ ページにアップロード項目がありません。ログインを試みます...');
+                const loginResult = await this.login();
+                if (!loginResult) throw new Error('自動ログインに失敗しました');
 
-            // Upload JPEG (required)
-            console.log('   📎 Uploading JPEG...');
-            await page.waitForTimeout(1000 + Math.random() * 1000); // 1-2 seconds before upload
+                await page.goto('https://www.ac-illust.com/creator/upload.php', {
+                    waitUntil: 'networkidle0'
+                });
+            }
 
+            await page.waitForTimeout(2000 + Math.random() * 2000);
+
+            // JPEG
+            console.log('   📎 JPEGをアップロード中...');
             const jpegInput = await page.$('input#jpg_path');
+            if (!jpegInput) {
+                const errPic = path.join(__dirname, `../output/upload_err_${Date.now()}.png`);
+                await page.screenshot({ path: errPic });
+                throw new Error(`アップロードフィールド消失 (URL: ${page.url()})`);
+            }
             await jpegInput.uploadFile(jpegPath);
 
-            // Wait for upload processing (thumbnail appearance) - Critical fix
-            console.log('   ⏳ Waiting for upload processing...');
+            // Processing wait
+            console.log('   ⏳ 完了待機中...');
             try {
                 await page.waitForFunction(() => {
-                    // Check for common upload success indicators
                     return document.querySelectorAll('.uploaded-image img').length > 0 ||
                         document.querySelectorAll('.preview-area img').length > 0;
                 }, { timeout: 30000 });
-            } catch (e) {
-                console.log('   ⚠️ Upload wait timeout (20s), hoping file is ready...');
-            }
+            } catch (e) { }
             await page.waitForTimeout(2000);
 
-            // Upload PNG if exists
+            // PNG
             if (pngPath) {
-                console.log('   📎 Uploading PNG...');
-                await page.waitForTimeout(1000 + Math.random() * 1000); // 1-2 seconds
-
+                console.log('   📎 PNGをアップロード中...');
                 const pngInput = await page.$('input#png_path');
-                await pngInput.uploadFile(pngPath);
-                await page.waitForTimeout(4000 + Math.random() * 2000); // 4-6 seconds
+                if (pngInput) await pngInput.uploadFile(pngPath);
+                await page.waitForTimeout(5000);
             }
 
-            // SIMULATE HUMAN THINKING 1 (Before Metadata): 45-70 seconds
-            console.log('   🤔 Thinking about title and tags... (~1 min)');
-            await page.waitForTimeout(45000 + Math.random() * 25000);
+            // Title
+            console.log('   ✏️ タイトル入力...');
+            await page.waitForTimeout(20000);
+            await page.type('input[name="title"]', metadata.title, { delay: 100 });
 
-            // Fill title
-            console.log('   ✏️ Filling metadata...');
-            await page.waitForTimeout(800 + Math.random() * 700); // 0.8-1.5 seconds
-
-            await page.type('input[name="title"]', metadata.title, { delay: 100 + Math.random() * 100 }); // Type with human-like speed
-
-            // Verify Title Input
-            const titleVal = await page.evaluate(() => document.querySelector('input[name="title"]').value);
-            if (!titleVal) {
-                console.log('   ⚠️ Title input failed, retrying via JS...');
-                await page.evaluate((val) => {
-                    const input = document.querySelector('input[name="title"]'); // Fix syntax
-                    input.value = val;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }, metadata.title);
-            }
-
-            // SIMULATE HUMAN THINKING 2 (Before Description/Category): 45-70 seconds
-            console.log('   🤔 Reviewing tags and selecting category... (~1 min)');
-            await page.waitForTimeout(45000 + Math.random() * 25000);
-
-            // Fill tags (bulk entry)
-            const tagsTextarea = await page.$('textarea#ntags');
-            // Clear existing tags first just in case
-            await tagsTextarea.click({ clickCount: 3 });
-            await tagsTextarea.press('Backspace');
-            const tagsString = metadata.tags.join(' ');
-            await tagsTextarea.type(tagsString, { delay: 50 + Math.random() * 50 }); // Slower typing
-            await page.waitForTimeout(500 + Math.random() * 500);
-
-            // Select category: フレーム (Frame) - Requested by User
+            // Tags
+            console.log('   🏷️ タグ入力...');
+            await page.waitForTimeout(20000);
             try {
-                // Find label with text 'フレーム'
-                await page.evaluate(() => {
-                    const labels = Array.from(document.querySelectorAll('label'));
-                    const frameLabel = labels.find(l => l.innerText.trim() === 'フレーム');
-                    if (frameLabel) {
-                        const input = document.getElementById(frameLabel.getAttribute('for')) ||
-                            frameLabel.querySelector('input');
-                        if (input && !input.checked) input.click();
-                    } else {
-                        // Fallback
-                        const frameInput = document.querySelector('input[id*="フレーム"]');
-                        if (frameInput && !frameInput.checked) frameInput.click();
+                const tagEd = 'ul.tag-editor';
+                await page.waitForSelector(tagEd);
+                await page.click(tagEd);
+                let input = 'ul.tag-editor input';
+                if (!(await page.$(input))) await page.click(`${tagEd} li.placeholder`);
+
+                if (await page.$(input)) {
+                    for (const tag of metadata.tags) {
+                        await page.type(input, tag);
+                        await page.keyboard.press('Enter');
+                        await page.waitForTimeout(200);
                     }
-                });
-                console.log('   📂 Selected category: Frame');
-            } catch (e) {
-                console.log('   ⚠️ Could not select Frame category');
-            }
-
-            // Fill description
-            if (metadata.description) {
-                await page.waitForTimeout(2000 + Math.random() * 2000);
-                await page.type('textarea#illust_comment', metadata.description, { delay: 30 + Math.random() * 40 });
-            }
-
-            // Check if dry-run mode
-            if (this.config.upload.dryRun) {
-                console.log('   ⚠️ DRY-RUN MODE: Not submitting form');
-                await page.screenshot({
-                    path: `./output/dry-run-${Date.now()}.png`,
-                    fullPage: true
-                });
-                return { success: true, dryRun: true };
-            }
-
-            // SIMULATE HUMAN THINKING 3 (Final Review): 20-40 seconds
-            console.log('   🤔 Final check before submission... (~30s)');
-            await page.waitForTimeout(20000 + Math.random() * 20000);
-
-            // AI checkbox logic: Explicitly UNCHECK as per user request
-            // (Handling case where browser/site might auto-restore state)
-            try {
-                await page.evaluate(() => {
-                    const aiInput = document.getElementById('illust_ai_status');
-                    if (aiInput && aiInput.checked) {
-                        aiInput.click();
-                    }
-                });
-                console.log('   🤖 Ensured AI checkbox is OFF');
-            } catch (e) {
-                console.log('   ⚠️ Could not access AI checkbox');
-            }
-
-            await page.waitForTimeout(1000);
-
-            // Submit form
-            console.log('   🚀 Submitting form...');
-
-            // Submit form using JS click to bypass overlays
-            console.log('   🚀 Submitting form...');
-
-            // Scroll to bottom
-            await page.evaluate(() => {
-                window.scrollTo(0, document.body.scrollHeight);
-            });
-            await page.waitForTimeout(1000);
-
-            // Force click using JS
-            const submitted = await page.evaluate(() => {
-                const btn = document.querySelector('input#submit_btn');
-                if (btn) {
-                    btn.click();
-                    return true;
                 }
-                return false;
-            });
-
-            if (!submitted) {
-                console.log('   ❌ Submit button not found!');
-                throw new Error('Submit button not found');
-            }
-
-            // Wait for confirmation modal
-            try {
-                await page.waitForSelector('#confirmCopyrightModal', { visible: true, timeout: 5000 });
-                await page.waitForTimeout(1000);
-
-                // Click upload button in modal using JS
-                await page.evaluate(() => {
-                    const confirmBtn = document.querySelector('#exec-upload');
-                    if (confirmBtn) confirmBtn.click();
-                });
             } catch (e) {
-                console.log('   ⚠️ Modal handling issue (might have submitted directly or timed out):', e.message);
-                // Fallback attempt to click if selector failed but button exists
-                await page.evaluate(() => {
-                    const confirmBtn = document.querySelector('#exec-upload');
-                    if (confirmBtn) confirmBtn.click();
-                });
+                await page.evaluate((tags) => {
+                    if (typeof jQuery !== 'undefined' && jQuery('#ntags').tagEditor) {
+                        for (const tag of tags) jQuery('#ntags').tagEditor('addTag', tag);
+                    } else {
+                        const n = document.querySelector('#ntags');
+                        if (n) n.value = tags.join(',');
+                    }
+                }, metadata.tags);
             }
 
-            // Wait for upload to complete
-            await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 });
-
-            // Check for success
-            const currentUrl = page.url();
-            const success = !currentUrl.includes('upload.php');
-
-            if (success) {
-                console.log('   ✅ Upload successful!');
-            } else {
-                console.log('   ⚠️ Upload may have failed - check manually');
-            }
-
-            // Keep page open
-            console.log('   👀 Keeping session open...');
-            return { success, url: currentUrl };
-
-        } catch (error) {
-            console.error('   ❌ Upload error:', error.message);
-
-            // Take screenshot for debugging
+            // Category
             try {
-                await page.screenshot({
-                    path: `./output/error-${Date.now()}.png`,
-                    fullPage: true
+                await page.evaluate(() => {
+                    const cb = document.getElementById('フレーム-109');
+                    if (cb && !cb.checked) cb.click();
                 });
             } catch (e) { }
 
-            // Keep page open for debugging
+            // Description
+            if (metadata.description) {
+                await page.type('textarea#illust_comment', metadata.description, { delay: 50 });
+            }
+
+            await page.waitForTimeout(20000);
+
+            if (this.config.upload.dryRun) {
+                console.log('   ⚠️ DRY-RUN skip');
+                return { success: true, dryRun: true };
+            }
+
+            // Submit
+            console.log('   🚀 送信...');
+            const sub = await page.evaluate(() => {
+                const b = document.querySelector('input#submit_btn');
+                if (b) { b.click(); return true; }
+                return false;
+            });
+            if (!sub) throw new Error('送信ボタンなし');
+
+            try {
+                await page.waitForSelector('#confirmCopyrightModal', { visible: true, timeout: 5000 });
+                await page.evaluate(() => {
+                    const ok = document.querySelector('#exec-upload');
+                    if (ok) ok.click();
+                });
+            } catch (e) { }
+
+            await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 30000 });
+            const ok = !page.url().includes('upload.php');
+            return { success: ok, url: page.url() };
+
+        } catch (error) {
+            console.error('   ❌ アップロードエラー:', error.message);
             throw error;
         }
     }
