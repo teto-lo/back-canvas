@@ -18,10 +18,13 @@ class NoiseGenerator {
         }
 
         // パラメータ初期値
+        const wInput = document.getElementById('width');
+        const hInput = document.getElementById('height');
+
         this.params = {
-            width: 1600,
-            height: 1200,
-            color: { r: 0, g: 0, b: 0 },
+            width: wInput ? parseInt(wInput.value) : 1600,
+            height: hInput ? parseInt(hInput.value) : 1200,
+            color: { r: 0, g: 0, b: 0 }, // Black
             density: 50,
             depth: 50,
             stretch: 0,
@@ -289,33 +292,49 @@ class NoiseGenerator {
 
     setupEventListeners() {
         // サイズ変更
-        document.getElementById('width').addEventListener('input', (e) => {
-            this.params.width = parseInt(e.target.value);
-            this.updateCanvasSize();
-            this.render();
-        });
+        // サイズ変更
+        const wInput = document.getElementById('width');
+        const hInput = document.getElementById('height');
 
-        document.getElementById('height').addEventListener('input', (e) => {
-            this.params.height = parseInt(e.target.value);
-            this.updateCanvasSize();
-            this.render();
-        });
+        if (wInput) {
+            wInput.addEventListener('input', (e) => {
+                this.params.width = parseInt(e.target.value);
+                this.updateCanvasSize();
+                this.render();
+            });
+        }
+
+        if (hInput) {
+            hInput.addEventListener('input', (e) => {
+                this.params.height = parseInt(e.target.value);
+                this.updateCanvasSize();
+                this.render();
+            });
+        }
 
         // カラー変更
-        document.getElementById('color').addEventListener('input', (e) => {
-            this.updateColor(e.target.value);
-            document.getElementById('hexColor').value = e.target.value;
-            this.render();
-        });
-
-        document.getElementById('hexColor').addEventListener('input', (e) => {
-            const color = e.target.value;
-            if (/^#[0-9A-F]{6}$/i.test(color)) {
-                this.updateColor(color);
-                document.getElementById('color').value = color;
+        // カラー変更
+        const colorInput = document.getElementById('color');
+        if (colorInput) {
+            colorInput.addEventListener('input', (e) => {
+                this.updateColor(e.target.value);
+                const hexInput = document.getElementById('hexColor');
+                if (hexInput) hexInput.value = e.target.value;
                 this.render();
-            }
-        });
+            });
+        }
+
+        const hexColorInput = document.getElementById('hexColor');
+        if (hexColorInput) {
+            hexColorInput.addEventListener('input', (e) => {
+                const color = e.target.value;
+                if (/^#[0-9A-F]{6}$/i.test(color)) {
+                    this.updateColor(color);
+                    if (colorInput) colorInput.value = color;
+                    this.render();
+                }
+            });
+        }
 
         // パラメータスライダー
         const paramSliders = ['density', 'depth', 'stretch', 'smooth', 'vignette', 'vignetteOpacity', 'centerFade', 'centerFadeOpacity'];
@@ -323,12 +342,14 @@ class NoiseGenerator {
             const slider = document.getElementById(param);
             const valueDisplay = document.getElementById(param + 'Value');
 
-            slider.addEventListener('input', (e) => {
-                const value = parseFloat(e.target.value);
-                this.params[param] = value;
-                valueDisplay.textContent = value.toFixed(1);
-                this.render();
-            });
+            if (slider) {
+                slider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    this.params[param] = value;
+                    if (valueDisplay) valueDisplay.textContent = value.toFixed(1);
+                    this.render();
+                });
+            }
         });
 
         // エクスポートボタン
@@ -474,41 +495,40 @@ class NoiseGenerator {
         this.params.depth = Math.random() * 100;
         this.params.stretch = Math.random() * 100;
         this.params.smooth = Math.random() * 100;
-        this.params.vignette = Math.random() * 60; // Vignetteは控えめに
-        this.params.vignetteOpacity = 80 + Math.random() * 20; // 高め
-        this.params.centerFade = Math.random() * 60; // Center Fade Size
-        this.params.centerFadeOpacity = 80 + Math.random() * 20;
+        this.params.vignette = 0;
+        this.params.vignetteOpacity = 0;
 
-        // UIを更新
-        document.getElementById('density').value = this.params.density;
-        document.getElementById('densityValue').textContent = this.params.density.toFixed(1);
+        // 中心透過もランダムからは除外（変な縁の原因になるため）
+        this.params.centerFade = 0;
+        this.params.centerFadeOpacity = 0;
 
-        document.getElementById('depth').value = this.params.depth;
-        document.getElementById('depthValue').textContent = this.params.depth.toFixed(1);
+        // UIを更新 (存在チェック付き)
+        const updates = {
+            'density': this.params.density,
+            'depth': this.params.depth,
+            'stretch': this.params.stretch,
+            'smooth': this.params.smooth,
+            'vignette': this.params.vignette,
+            'vignetteOpacity': this.params.vignetteOpacity,
+            'centerFade': this.params.centerFade,
+            'centerFadeOpacity': this.params.centerFadeOpacity
+        };
 
-        document.getElementById('stretch').value = this.params.stretch;
-        document.getElementById('stretchValue').textContent = this.params.stretch.toFixed(1);
+        for (const [id, val] of Object.entries(updates)) {
+            const el = document.getElementById(id);
+            const disp = document.getElementById(id + 'Value');
+            if (el) el.value = val;
+            if (disp) disp.textContent = val.toFixed(1);
+        }
 
-        document.getElementById('smooth').value = this.params.smooth;
-        document.getElementById('smoothValue').textContent = this.params.smooth.toFixed(1);
-
-        document.getElementById('vignette').value = this.params.vignette;
-        document.getElementById('vignetteValue').textContent = this.params.vignette.toFixed(1);
-
-        document.getElementById('vignetteOpacity').value = this.params.vignetteOpacity;
-        document.getElementById('vignetteOpacityValue').textContent = this.params.vignetteOpacity.toFixed(1);
-
-        document.getElementById('centerFade').value = this.params.centerFade;
-        document.getElementById('centerFadeValue').textContent = this.params.centerFade.toFixed(1);
-
-        document.getElementById('centerFadeOpacity').value = this.params.centerFadeOpacity;
-        document.getElementById('centerFadeOpacityValue').textContent = this.params.centerFadeOpacity.toFixed(1);
-
-        // ランダムカラー生成 (ノイズ色)
+        // ランダムカラー生成
         const randomColor = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
         this.updateColor(randomColor);
-        document.getElementById('color').value = randomColor;
-        document.getElementById('hexColor').value = randomColor;
+
+        const colorInput = document.getElementById('color');
+        const hexInput = document.getElementById('hexColor');
+        if (colorInput) colorInput.value = randomColor;
+        if (hexInput) hexInput.value = randomColor;
 
         // 再描画
         this.render();

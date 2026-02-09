@@ -86,3 +86,14 @@ Route::get('/sunburst', function () {
 Route::get('/liquid', function () {
     return view('liquid-generator');
 })->name('liquid');
+
+// Frame (Transparent) Generator
+Route::get('/frame', function () {
+    return view('frame-generator');
+})->name('frame');
+
+// Soft Gradient Generator
+Route::get('/soft-gradient', function () {
+    return view('soft-gradient-generator');
+})->name('soft-gradient');
+

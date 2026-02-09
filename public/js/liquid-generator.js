@@ -106,10 +106,9 @@ class LiquidGenerator {
             
             void main() {
                 vec2 uv = v_texCoord;
-                float aspect = u_resolution.x / u_resolution.y;
-                uv.x *= aspect;
                 
-                // Domain warping
+                // Use UV directly without aspect correction to ensure seamless tiling
+                // The domain warping will create visual variety without edge artifacts
                 vec2 st = uv * (u_scale / 10.0);
                 
                 vec2 q = vec2(0.);
@@ -174,6 +173,9 @@ class LiquidGenerator {
         this.canvas.width = this.params.width;
         this.canvas.height = this.params.height;
         gl.viewport(0, 0, this.params.width, this.params.height);
+
+        // Disable blending to prevent edge artifacts
+        gl.disable(gl.BLEND);
     }
 
     createShader(type, source) {

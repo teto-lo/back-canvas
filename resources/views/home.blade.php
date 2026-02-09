@@ -200,6 +200,19 @@
             background: linear-gradient(45deg, #1890ff, #13c2c2, #722ed1);
             filter: blur(5px);
         }
+        .preview-frame {
+            background-color: #fff1f2;
+            background-image: radial-gradient(#ec4899 20%, transparent 20%);
+            background-size: 15px 15px;
+            border: 8px solid #fbcfe8;
+            box-sizing: border-box;
+        }
+        .preview-soft-gradient {
+            background: radial-gradient(circle at 30% 30%, #a2d2ff, transparent 50%),
+                        radial-gradient(circle at 70% 70%, #ffc8dd, transparent 50%),
+                        #ffffff;
+            filter: blur(1px);
+        }
 
     </style>
 
@@ -385,6 +398,28 @@
             <div class="card-content">
                 <h2>リキッド (Liquid)</h2>
                 <p>流体のような歪みを持つ抽象的な背景。</p>
+            </div>
+        </a>
+
+        <!-- Frame Generator -->
+        <a href="{{ route('frame') }}" class="tool-card">
+            <div class="card-preview preview-frame">
+                <div class="card-icon">🖼️</div>
+            </div>
+            <div class="card-content">
+                <h2>フレーム生成 (Frame)</h2>
+                <p>パステルカラーの幾何学フレーム。</p>
+            </div>
+        </a>
+
+        <!-- Soft Gradient Generator -->
+        <a href="{{ route('soft-gradient') }}" class="tool-card">
+            <div class="card-preview preview-soft-gradient">
+                <div class="card-icon">☁️</div>
+            </div>
+            <div class="card-content">
+                <h2>ソフトグラデーション (Soft)</h2>
+                <p>ふんわりとした夢かわいい背景。</p>
             </div>
         </a>
     </div>

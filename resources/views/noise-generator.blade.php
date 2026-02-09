@@ -450,6 +450,10 @@
                         <input type="number" id="width" value="1600" min="1" max="4096"
                             step="1">
                     </div>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="color" value="#000000">
+                        <input type="text" id="hexColor" class="hex-input" value="#000000">
+                    </div>
                     <div class="control-group">
                         <label for="height">高さ (px)</label>
                         <input type="number" id="height" value="1200" min="1" max="4096"

@@ -43,12 +43,13 @@
 
         .canvas-container {
             background: white;
-            border-radius: 20px;
+            border-radius: 0;
             padding: 24px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.05);
             display: flex;
             flex-direction: column;
             align-items: center;
+            overflow: visible;
         }
 
         h1 {
@@ -180,6 +181,14 @@
              border-radius: 8px;
              font-size: 14px;
              background: white;
+        }
+        
+        #liquidCanvas {
+            display: block;
+            border: none;
+            outline: none;
+            max-width: 100%;
+            height: auto;
         }
     </style>
 </head>

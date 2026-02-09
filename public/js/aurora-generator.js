@@ -16,9 +16,12 @@ class AuroraGenerator {
             return;
         }
 
+        this.widthInput = document.getElementById('width');
+        this.heightInput = document.getElementById('height');
+
         this.params = {
-            width: 1600,
-            height: 1200,
+            width: this.widthInput ? parseInt(this.widthInput.value) : 1600,
+            height: this.heightInput ? parseInt(this.heightInput.value) : 1200,
             bgColor: { r: 0.06, g: 0.09, b: 0.16 }, // Slate 900
             speed: 20,
             size: 60,
@@ -201,27 +204,34 @@ class AuroraGenerator {
         const container = document.getElementById('colorContainer');
         const addBtn = document.getElementById('addColorBtn');
 
-        // Render initial colors
-        container.innerHTML = '';
-        this.colors.forEach((hex, index) => {
-            this.createColorInput(hex, index);
-        });
+        if (container) {
+            // Render initial colors
+            container.innerHTML = '';
+            this.colors.forEach((hex, index) => {
+                this.createColorInput(hex, index);
+            });
+        }
 
         // Add Button
-        addBtn.addEventListener('click', () => {
-            if (this.colors.length >= this.maxColors) return;
-            // Add random bright color
-            const hex = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
-            this.colors.push(hex);
-            this.createColorInput(hex, this.colors.length - 1);
-        });
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                if (this.colors.length >= this.maxColors) return;
+                // Add random bright color
+                const hex = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
+                this.colors.push(hex);
+                this.createColorInput(hex, this.colors.length - 1);
+            });
+        }
 
         // Background Color
-        document.getElementById('colorBg').addEventListener('input', (e) => {
-            const hex = e.target.value;
-            const rgb = this.hexToRgb(hex);
-            this.params.bgColor = rgb;
-        });
+        const bgInput = document.getElementById('colorBg');
+        if (bgInput) {
+            bgInput.addEventListener('input', (e) => {
+                const hex = e.target.value;
+                const rgb = this.hexToRgb(hex);
+                this.params.bgColor = rgb;
+            });
+        }
     }
 
     createColorInput(hex, index) {
@@ -283,15 +293,47 @@ class AuroraGenerator {
         ['speed', 'size', 'flow'].forEach(id => {
             const slider = document.getElementById(id);
             const display = document.getElementById(id + 'Value');
-            slider.addEventListener('input', (e) => {
-                const val = parseFloat(e.target.value);
-                this.params[id] = val;
-                display.textContent = val;
-            });
+            if (slider) {
+                slider.addEventListener('input', (e) => {
+                    const val = parseFloat(e.target.value);
+                    this.params[id] = val;
+                    if (display) display.textContent = val;
+                });
+            }
         });
 
-        document.getElementById('randomBtn').addEventListener('click', () => this.randomize());
-        document.getElementById('exportBtn').addEventListener('click', () => this.exportImage());
+        // Canvas Size Listeners
+        if (this.widthInput) {
+            this.widthInput.addEventListener('change', () => this.resize());
+            this.widthInput.addEventListener('input', () => this.resize());
+        }
+        if (this.heightInput) {
+            this.heightInput.addEventListener('change', () => this.resize());
+            this.heightInput.addEventListener('input', () => this.resize());
+        }
+
+        const randomBtn = document.getElementById('randomBtn');
+        if (randomBtn) randomBtn.addEventListener('click', () => this.randomize());
+
+        const exportBtn = document.getElementById('exportBtn');
+        if (exportBtn) exportBtn.addEventListener('click', () => this.exportImage());
+    }
+
+    resize() {
+        const w = parseInt(this.widthInput.value) || 1600;
+        const h = parseInt(this.heightInput.value) || 1200;
+
+        this.params.width = w;
+        this.params.height = h;
+        this.canvas.width = w;
+        this.canvas.height = h;
+
+        // Update Viewport
+        this.gl.viewport(0, 0, w, h);
+
+        // Update Info Display
+        const info = document.getElementById('canvasInfo');
+        if (info) info.textContent = `${w} × ${h} px`;
     }
 
     randomize() {
@@ -312,8 +354,10 @@ class AuroraGenerator {
         this.params.flow = Math.random() * 100;
 
         ['speed', 'size', 'flow'].forEach(id => {
-            document.getElementById(id).value = this.params[id];
-            document.getElementById(id + 'Value').textContent = Math.floor(this.params[id]);
+            const el = document.getElementById(id);
+            const disp = document.getElementById(id + 'Value');
+            if (el) el.value = this.params[id];
+            if (disp) disp.textContent = Math.floor(this.params[id]);
         });
     }
 
@@ -440,5 +484,5 @@ class AuroraGenerator {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    new AuroraGenerator();
+    window.auroraGen = new AuroraGenerator();
 });
