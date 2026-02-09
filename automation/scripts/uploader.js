@@ -159,7 +159,7 @@ class ACIllustUploader {
     /**
      * イラストACへのアップロード
      */
-    async upload(jpegPath, pngPath, metadata) {
+    async upload(jpegPath, pngPath, metadata, generatorName) {
         if (!this.page) this.page = await this.browser.newPage();
         const page = this.page;
 
@@ -245,13 +245,40 @@ class ACIllustUploader {
                 }, metadata.tags);
             }
 
-            // Category
+            // Category Selection (Simplified based on user provided site structure)
             try {
-                await page.evaluate(() => {
-                    const cb = document.getElementById('フレーム-109');
-                    if (cb && !cb.checked) cb.click();
-                });
-            } catch (e) { }
+                // Rule: If transparent (pngPath exists), use "フレーム". Otherwise, use "その他".
+                const catName = pngPath ? 'フレーム' : 'その他';
+                const catId = pngPath ? 'フレーム-109' : 'その他-91';
+
+                console.log(`   📂 カテゴリー選択: ${catName} (${catId})...`);
+
+                await page.evaluate((targetLabel, targetId) => {
+                    // 1. Try by specific ID first (most reliable)
+                    const cb = document.getElementById(targetId);
+                    if (cb) {
+                        if (!cb.checked) cb.click();
+                        return;
+                    }
+
+                    // 2. Fallback to Label text match
+                    const labels = Array.from(document.querySelectorAll('label'));
+                    let target = labels.find(l => l.textContent.trim() === targetLabel);
+                    if (!target) target = labels.find(l => l.textContent.includes(targetLabel));
+
+                    if (target) {
+                        const checkboxId = target.getAttribute('for');
+                        if (checkboxId) {
+                            const cbFromLabel = document.getElementById(checkboxId);
+                            if (cbFromLabel && !cbFromLabel.checked) {
+                                cbFromLabel.click();
+                            }
+                        }
+                    }
+                }, catName, catId);
+            } catch (e) {
+                console.log(`   ⚠️ カテゴリー選択中にエラーが発生しました: ${e.message}`);
+            }
 
             // Description
             if (metadata.description) {

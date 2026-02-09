@@ -43,6 +43,16 @@ class ImageGenerator {
         // Stealth modifications
         await this.page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
+
+            // FORCE PRESERVE DRAWING BUFFER FOR WEBGL
+            // This ensures that gl.readPixels and screenshotting works for all generators
+            const getContext = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function (type, options) {
+                if (type === 'webgl' || type === 'webgl2') {
+                    options = { ...(options || {}), preserveDrawingBuffer: true };
+                }
+                return getContext.call(this, type, options);
+            };
         });
 
         // Random mouse movement simulation helper
@@ -195,8 +205,9 @@ class ImageGenerator {
             console.log('   📐 Setting canvas size to 1600x1200...');
             try {
                 await page.evaluate(() => {
-                    const widthInput = document.querySelector('#canvasWidth');
-                    const heightInput = document.querySelector('#canvasHeight');
+                    // Try standard IDs first, then fallback to 'width'/'height' (Aurora/Noise)
+                    const widthInput = document.querySelector('#canvasWidth') || document.querySelector('#width');
+                    const heightInput = document.querySelector('#canvasHeight') || document.querySelector('#height');
 
                     if (widthInput && heightInput) {
                         widthInput.value = '1600';
@@ -214,19 +225,113 @@ class ImageGenerator {
                 console.log('   ⚠️ Could not set canvas size, using default');
             }
 
-            // Click randomize button with human-like delay
+            // Click randomize button multiple times for better variety
             try {
                 await page.waitForSelector('#randomBtn', { timeout: 5000 });
-                await page.waitForTimeout(500 + Math.random() * 1000); // 0.5-1.5 seconds
 
+                // Randomly change some dropdowns first if they exist
                 await page.evaluate(() => {
-                    const btn = document.querySelector('#randomBtn');
-                    if (btn) btn.click();
+                    const selects = document.querySelectorAll('select');
+                    selects.forEach(select => {
+                        if (select.id === 'patternType' || select.id === 'type') {
+                            const options = select.options;
+                            const randomIndex = Math.floor(Math.random() * options.length);
+                            select.selectedIndex = randomIndex;
+                            select.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    });
                 });
+                // Capture initial canvas state for "Wait for Change" logic
+                const getSmartHash = async () => {
+                    // SCREENSHOT BASED HASHING (Slow but 100% Reliable for WebGL)
+                    // We capture a small crop of the canvas area to check for visual changes
+                    try {
+                        const buffer = await page.screenshot({
+                            clip: { x: 400, y: 300, width: 100, height: 100 }, // Center-ish crop
+                            encoding: 'binary'
+                        });
+                        // Simple buffer sum hash
+                        let sum = 0;
+                        for (let i = 0; i < buffer.length; i += 100) sum += buffer[i];
+                        return 'scr_' + sum;
+                    } catch (e) {
+                        return 'error_' + Math.random();
+                    }
+                };
 
-                await page.waitForTimeout(3000 + Math.random() * 2000); // 3-5 seconds for render
+                let initialInternalHash = await getSmartHash();
+                console.log(`   📸 Initial Visual Hash: ${initialInternalHash}`);
+
+                // Click randomize 3-5 times
+                const clickCount = 3 + Math.floor(Math.random() * 3);
+                console.log(`   🎲 Randomizing ${clickCount} times...`);
+
+                for (let i = 0; i < clickCount; i++) {
+                    await page.evaluate(() => {
+                        const btn = document.querySelector('#randomBtn');
+                        if (btn) btn.click();
+                    });
+
+                    // Wait for small delay between clicks
+                    await page.waitForTimeout(400 + Math.random() * 300);
+                }
+
+                // BARRIER 1: WAIT FOR CHANGE
+                // We must see the hash DIFFERENT from initial, to ensure rendering started.
+                console.log('   ⏳ Waiting for canvas to START changing...');
+                const startWait = Date.now();
+                let changed = false;
+
+                while (Date.now() - startWait < 5000) { // 5 sec max wait for start
+                    const curr = await getSmartHash();
+                    if (curr !== initialInternalHash) {
+                        changed = true;
+                        console.log('   ⚡ Canvas started changing.');
+                        break;
+                    }
+                    await page.waitForTimeout(200);
+                }
+
+                if (!changed) console.log('   ⚠️ Canvas did not change from initial state (or hash failed).');
+
+                // BARRIER 2: WAIT FOR STABILITY (OR TIMEOUT)
+                // Now wait for it to STOP changing, OR time out if it's a continuous animation
+                console.log('   ⏳ Waiting for canvas stability (max 4s)...');
+
+                let lastHash = await getSmartHash();
+                let stableStart = Date.now(); // Last time it was stable
+                const phaseStart = Date.now(); // Total time spent in this phase
+                const stabilityTimeout = 4000; // Force proceed after 4 seconds
+
+                while (Date.now() - phaseStart < 10000) { // Safety outer loop limit
+                    // If total wait exceeds soft limit, break and accept current state
+                    if (Date.now() - phaseStart > stabilityTimeout) {
+                        console.log('   ⚠️ Animation detected (not stable), proceeding with capture.');
+                        break;
+                    }
+
+                    await page.waitForTimeout(300);
+                    const curr = await getSmartHash();
+
+                    if (curr === lastHash) {
+                        // If stable for 0.8s, break
+                        if (Date.now() - stableStart > 800) {
+                            console.log('   ✅ Canvas is stable.');
+                            break;
+                        }
+                    } else {
+                        // Changed. Reset stableStart, but NOT phaseStart
+                        lastHash = curr;
+                        stableStart = Date.now();
+                    }
+                }
+
+
+                await page.waitForTimeout(500); // Final safety buffer
+
             } catch (e) {
-                console.log('   ⚠️ Could not click randomize, using current state');
+                console.log('   ⚠️ Could not click randomize or wait issues, using current state');
+                console.log(e);
                 await page.waitForTimeout(2000);
             }
 
@@ -234,57 +339,112 @@ class ImageGenerator {
             const hasTransparency = await this.checkTransparency(page);
             console.log(`   Transparency: ${hasTransparency ? 'Yes (>50%)' : 'No'}`);
 
-            // Get parameters
+            // ---------------------------------------------------------
+            // VISUAL COLOR EXTRACTION
+            // ---------------------------------------------------------
+            console.log('   🎨 Extracting visual colors from canvas...');
+            const visualColors = await page.evaluate(() => {
+                try {
+                    const canvas = document.querySelector('canvas#previewCanvas') || document.querySelector('canvas');
+                    if (!canvas) return [];
+
+                    // Standard canvas or WebGL? 
+                    // If WebGL, we must use toDataURL approach to be safe or try gl.readPixels
+                    // But standard approach: use offscreen canvas
+                    const offCanvas = document.createElement('canvas');
+                    offCanvas.width = 100;
+                    offCanvas.height = 100;
+                    const offCtx = offCanvas.getContext('2d');
+                    offCtx.drawImage(canvas, 0, 0, 100, 100);
+
+                    const imageData = offCtx.getImageData(0, 0, 100, 100);
+                    const data = imageData.data;
+
+                    const colorCounts = {};
+
+                    // Simple quantization (snap to nearest 32)
+                    const round = (n) => Math.floor(n / 32) * 32;
+                    const rgbToHex = (r, g, b) => {
+                        return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+                    };
+
+                    for (let i = 0; i < data.length; i += 4) {
+                        const r = data[i];
+                        const g = data[i + 1];
+                        const b = data[i + 2];
+                        const a = data[i + 3];
+
+                        if (a < 128) continue; // Skip transparency
+
+                        // Ignore very dark or very white (optional, but helps tag relevance)
+                        if (r < 20 && g < 20 && b < 20) continue; // Skip pure black
+                        if (r > 240 && g > 240 && b > 240) continue; // Skip pure white
+
+                        const key = `${round(r)},${round(g)},${round(b)}`;
+                        if (!colorCounts[key]) colorCounts[key] = { count: 0, r, g, b };
+                        colorCounts[key].count++;
+                    }
+
+                    const sorted = Object.values(colorCounts).sort((a, b) => b.count - a.count);
+
+                    // Take top 5
+                    return sorted.slice(0, 5).map(c => rgbToHex(c.r, c.g, c.b));
+
+                } catch (e) {
+                    console.error('Visual extraction failed', e);
+                    return [];
+                }
+            });
+
+            console.log('   🎨 Detect Colors:', visualColors.join(', '));
+
+            // Get standard parameters but OVERRIDE colors
             const parameters = await this.getParameters(page, generatorName);
-
-            // Setup download path
-            const downloadPath = this.outputDir;
-            await this.downloadFile(page, downloadPath);
-
-            // Human-like delay before export
-            await page.waitForTimeout(1000 + Math.random() * 1500); // 1-2.5 seconds
-
-            // Export JPEG (required)
-            console.log('   📥 Exporting JPEG...');
-            await page.select('#exportFormat', 'jpeg');
-            await page.waitForTimeout(500 + Math.random() * 500); // 0.5-1 second
-
-            await page.click('#exportBtn');
-            await page.waitForTimeout(4000 + Math.random() * 2000); // 4-6 seconds for download
-
-            // Find downloaded JPEG file
-            const files = fs.readdirSync(downloadPath);
-            const jpegFile = files.find(f => f.endsWith('.jpg') && f.includes(generatorName));
-
-            let jpegPath = null;
-            if (jpegFile) {
-                const oldPath = path.join(downloadPath, jpegFile);
-                jpegPath = path.join(downloadPath, `${baseFilename}.jpg`);
-                fs.renameSync(oldPath, jpegPath);
-                console.log(`   ✅ JPEG saved: ${baseFilename}.jpg`);
+            if (visualColors.length > 0) {
+                // If we detected colors, trust them over the DOM inputs
+                parameters.colors = visualColors;
+                console.log('   ✅ Overrode parameters with visual colors.');
             }
 
-            // Export PNG if transparency detected
+
+            // DIRECT SCREENSHOT EXPORT (Guarantees WYSIWYG)
+            // Instead of clicking export (which might re-seed/re-render), we capture the canvas directly.
+            console.log('   � Direct capturing canvas to file...');
+
+            const downloadPath = this.outputDir;
+            const canvasHandle = await page.$('canvas#previewCanvas') || await page.$('canvas');
+            if (!canvasHandle) throw new Error('Canvas element not found for screenshot');
+
+            // Get bounding box for reliable page-level screenshot
+            // Also force no border/outline to prevent artifacts
+            await page.addStyleTag({ content: 'canvas { border: none !important; outline: none !important; box-shadow: none !important; }' });
+
+            const boundingBox = await canvasHandle.boundingBox();
+            if (!boundingBox) throw new Error('Canvas has no bounding box');
+
+            // 1. Save JPEG
+            await page.waitForTimeout(500); // Settle buffer
+            const jpegPath = path.join(downloadPath, `${baseFilename}.jpg`);
+            await page.screenshot({
+                path: jpegPath,
+                type: 'jpeg',
+                quality: 95,
+                clip: boundingBox
+            });
+            console.log(`   ✅ JPEG saved: ${baseFilename}.jpg`);
+
+            // 2. Save PNG (if transparent)
             let pngPath = null;
             if (hasTransparency) {
-                console.log('   📥 Exporting PNG...');
-                await page.waitForTimeout(1000 + Math.random() * 1000); // 1-2 seconds
-
-                await page.select('#exportFormat', 'png');
-                await page.waitForTimeout(500 + Math.random() * 500);
-
-                await page.click('#exportBtn');
-                await page.waitForTimeout(4000 + Math.random() * 2000); // 4-6 seconds
-
-                const filesAfter = fs.readdirSync(downloadPath);
-                const pngFile = filesAfter.find(f => f.endsWith('.png') && f.includes(generatorName) && !files.includes(f));
-
-                if (pngFile) {
-                    const oldPath = path.join(downloadPath, pngFile);
-                    pngPath = path.join(downloadPath, `${baseFilename}.png`);
-                    fs.renameSync(oldPath, pngPath);
-                    console.log(`   ✅ PNG saved: ${baseFilename}.png`);
-                }
+                console.log('   📥 Saving PNG (Transparency preserved)...');
+                pngPath = path.join(downloadPath, `${baseFilename}.png`);
+                await page.screenshot({
+                    path: pngPath,
+                    type: 'png',
+                    omitBackground: true,
+                    clip: boundingBox
+                });
+                console.log(`   ✅ PNG saved: ${baseFilename}.png`);
             }
 
             // Keep page open (do not close) to simulate human browsing

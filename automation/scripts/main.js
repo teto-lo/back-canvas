@@ -6,11 +6,45 @@
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const ImageGenerator = require('./generator');
 const AIMetadataGenerator = require('./ai-metadata');
 const ACIllustUploader = require('./uploader');
 const DuplicateChecker = require('./duplicate-checker');
+
+// Helper to start Laravel server
+let serverProcess = null;
+
+function startLaravelServer() {
+    console.log('🚀 Starting Laravel Server (php artisan serve)...');
+    const projectRoot = path.join(__dirname, '../../'); // ../../ from scripts/main.js
+
+    serverProcess = spawn('php', ['artisan', 'serve'], {
+        cwd: projectRoot,
+        stdio: 'ignore', // 'inherit' to see output, 'ignore' if noisy
+        shell: true
+    });
+
+    console.log(`   Server PID: ${serverProcess.pid}`);
+
+    // Ensure server is killed on exit
+    process.on('exit', () => {
+        if (serverProcess) {
+            console.log('🛑 Stopping Laravel Server...');
+            // On Windows, taskkill is more reliable for tree killing
+            try {
+                require('child_process').execSync(`taskkill /pid ${serverProcess.pid} /T /F`);
+            } catch (e) { }
+            serverProcess.kill();
+        }
+    });
+
+    // Handle Ctrl+C
+    process.on('SIGINT', () => {
+        process.exit();
+    });
+}
 
 // Load configuration
 const config = JSON.parse(
@@ -69,6 +103,10 @@ async function waitUntilWorkingHours() {
 async function main() {
     console.log('🚀 AC-Illust Auto-Uploader (Resident Mode) Started\n');
     console.log('='.repeat(60));
+
+    // Start Backend Server
+    startLaravelServer();
+    await sleep(5000); // Wait for server to be ready
 
     // Validate environment variables
     if (!process.env.GEMINI_API_KEY) {
@@ -184,7 +222,7 @@ async function main() {
 
                         let uploadResult = { success: true, dryRun: config.upload.dryRun };
                         if (!config.upload.dryRun) {
-                            uploadResult = await uploader.upload(imageData.jpegPath, imageData.pngPath, metadata);
+                            uploadResult = await uploader.upload(imageData.jpegPath, imageData.pngPath, metadata, imageData.generatorName);
                         }
 
                         await duplicateChecker.saveUploadRecord({

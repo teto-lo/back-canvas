@@ -386,7 +386,7 @@ class SlackNotifier {
                     await this.webClient.chat.postMessage({
                         channel: this.channelId,
                         thread_ts: messageTs,
-                        text: `✏️✅ *Edited & Approved* by <@${payload.user.id}>\nNew Title: ${title}`
+                        text: `✏️✅ *Edited & Approved*\nNew Title: ${title}`
                     });
                 } catch (e) {
                     console.warn('Error sending edit confirmation:', e.message);
