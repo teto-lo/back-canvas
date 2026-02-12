@@ -43,7 +43,7 @@
         .canvas-container {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(10px);
-            border-radius: 16px;
+            border-radius: 0;
             padding: 24px;
             box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
             display: flex;
@@ -197,7 +197,7 @@
 
         canvas {
             max-width: 100%;
-            border-radius: 8px;
+            border-radius: 0;
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
             background: white;
         }

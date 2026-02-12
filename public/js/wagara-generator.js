@@ -156,6 +156,11 @@ class WagaraGenerator {
 
             void main() {
                 vec2 uv = v_texCoord;
+                
+                // Fix: Clamp UVs to prevent negative precision errors causing edge artifacts
+                // This prevents floor() from jumping to -1 at the left/bottom edge
+                uv = max(vec2(0.0), uv);
+
                 float aspect = u_resolution.x / u_resolution.y;
                 uv.x *= aspect;
                 

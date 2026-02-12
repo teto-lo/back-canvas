@@ -44,7 +44,7 @@
         .canvas-container {
             background: #000;
             border: 1px solid #00ffcc;
-            border-radius: 4px;
+            border-radius: 0;
             padding: 24px;
             box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
             display: flex;
